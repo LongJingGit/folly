@@ -96,6 +96,7 @@ ElfCache* defaultElfCache() {
 }
 
 void setSymbolizedFrame(
+    ElfCacheBase* const elfCache,
     SymbolizedFrame& frame,
     const std::shared_ptr<ElfFile>& file,
     uintptr_t address,
@@ -113,7 +114,7 @@ void setSymbolizedFrame(
   frame.file = file;
   frame.name = file->getSymbolName(sym);
 
-  Dwarf(file.get())
+  Dwarf(elfCache, file.get())
       .findAddress(address, mode, frame.location, extraInlineFrames);
 }
 
@@ -141,7 +142,14 @@ size_t Symbolizer::symbolize(
     folly::Range<SymbolizedFrame*> frames) {
   size_t addrCount = addrs.size();
   size_t frameCount = frames.size();
-  FOLLY_SAFE_CHECK(addrCount <= frameCount, "Not enough frames.");
+  if (addrCount > frameCount) {
+    FOLLY_SAFE_DFATAL(
+        "Not enough frames: addrCount: ",
+        addrCount,
+        " frameCount: ",
+        frameCount);
+    return 0;
+  }
   size_t remaining = addrCount;
 
   auto const dbg = detail::get_r_debug();
@@ -181,7 +189,6 @@ size_t Symbolizer::symbolize(
     // behavior appears to be documented, so checking for the empty string is
     // as good as anything.
     auto const objPath = lmap->l_name[0] != '\0' ? lmap->l_name : selfPath;
-
     auto const elfFile = cache_->getFile(objPath);
     if (!elfFile) {
       continue;
@@ -231,14 +238,15 @@ size_t Symbolizer::symbolize(
         if (mode_ == LocationInfoMode::FULL_WITH_INLINE &&
             frameCount > addrCount) {
           size_t maxInline = std::min<size_t>(
-              Dwarf::kMaxInlineLocationInfoPerFrame, frameCount - addrCount);
+              kMaxInlineLocationInfoPerFrame, frameCount - addrCount);
           // First use the trailing empty frames (index starting from addrCount)
           // to get the inline call stack, then rotate these inline functions
           // before the caller at `frame[i]`.
           folly::Range<SymbolizedFrame*> inlineFrameRange(
               frames.begin() + addrCount,
               frames.begin() + addrCount + maxInline);
-          setSymbolizedFrame(frame, elfFile, adjusted, mode_, inlineFrameRange);
+          setSymbolizedFrame(
+              cache_, frame, elfFile, adjusted, mode_, inlineFrameRange);
 
           numInlined = countFrames(inlineFrameRange);
           // Rotate inline frames right before its caller frame.
@@ -248,7 +256,7 @@ size_t Symbolizer::symbolize(
               frames.begin() + addrCount + numInlined);
           addrCount += numInlined;
         } else {
-          setSymbolizedFrame(frame, elfFile, adjusted, mode_);
+          setSymbolizedFrame(cache_, frame, elfFile, adjusted, mode_);
         }
         --remaining;
         if (symbolCache_) {

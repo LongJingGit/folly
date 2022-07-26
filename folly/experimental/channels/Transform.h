@@ -18,6 +18,7 @@
 
 #include <folly/executors/SequencedExecutor.h>
 #include <folly/experimental/channels/Channel.h>
+#include <folly/experimental/channels/OnClosedException.h>
 #include <folly/experimental/channels/RateLimiter.h>
 
 namespace folly {
@@ -68,7 +69,7 @@ namespace channels {
  *  Receiver<std::string> outputReceiver = transform(
  *      getInputReceiver(),
  *      getExecutor(),
- *      [](folly::Try<int> try) -> folly::coro::AsyncGenerator<std::string&&> {
+ *      [](Try<int> try) -> folly::coro::AsyncGenerator<std::string&&> {
  *          co_yield folly::to<std::string>(try.value());
  *      });
  */
@@ -76,9 +77,9 @@ template <
     typename ReceiverType,
     typename TransformValueFunc,
     typename InputValueType = typename ReceiverType::ValueType,
-    typename OutputValueType = typename folly::invoke_result_t<
+    typename OutputValueType = typename folly::invoke_result_t< //
         TransformValueFunc,
-        folly::Try<InputValueType>>::value_type>
+        Try<InputValueType>>::value_type>
 Receiver<OutputValueType> transform(
     ReceiverType inputReceiver,
     folly::Executor::KeepAlive<folly::SequencedExecutor> executor,
@@ -92,7 +93,7 @@ Receiver<OutputValueType> transform(
  * folly::Executor::KeepAlive<folly::SequencedExecutor> getExecutor();
  *
  * folly::coro::AsyncGenerator<OutputValueType&&> transformValue(
- *     folly::Try<InputValueType> inputValue);
+ *     Try<InputValueType> inputValue);
  *
  * std::shared_ptr<RateLimiter> getRateLimiter(); // Can return nullptr
  */
@@ -102,7 +103,7 @@ template <
     typename InputValueType = typename ReceiverType::ValueType,
     typename OutputValueType =
         typename decltype(std::declval<TransformerType>().transformValue(
-            std::declval<folly::Try<InputValueType>>()))::value_type>
+            std::declval<Try<InputValueType>>()))::value_type>
 Receiver<OutputValueType> transform(
     ReceiverType inputReceiver, TransformerType transformer);
 
@@ -161,7 +162,7 @@ Receiver<OutputValueType> transform(
  *              std::vector<std::string>({"Initialized"}),
  *              getInputReceiver(initializeArg));
  *      },
- *      [](folly::Try<int> try) -> folly::coro::AsyncGenerator<std::string&&> {
+ *      [](Try<int> try) -> folly::coro::AsyncGenerator<std::string&&> {
  *          try {
  *            co_yield folly::to<std::string>(try.value());
  *          } catch (const SomeApplicationException& ex) {
@@ -178,9 +179,9 @@ template <
         InitializeTransformFunc,
         InitializeArg>::StorageType::second_type,
     typename InputValueType = typename ReceiverType::ValueType,
-    typename OutputValueType = typename folly::invoke_result_t<
+    typename OutputValueType = typename folly::invoke_result_t< //
         TransformValueFunc,
-        folly::Try<InputValueType>>::value_type>
+        Try<InputValueType>>::value_type>
 Receiver<OutputValueType> resumableTransform(
     folly::Executor::KeepAlive<folly::SequencedExecutor> executor,
     InitializeArg initializeArg,
@@ -198,7 +199,7 @@ Receiver<OutputValueType> resumableTransform(
  * initializeTransform(InitializeArg initializeArg);
  *
  * folly::coro::AsyncGenerator<OutputValueType&&> transformValue(
- *     folly::Try<InputValueType> inputValue);
+ *     Try<InputValueType> inputValue);
  *
  * std::shared_ptr<RateLimiter> getRateLimiter(); // Can return nullptr
  */
@@ -211,20 +212,9 @@ template <
     typename InputValueType = typename ReceiverType::ValueType,
     typename OutputValueType =
         typename decltype(std::declval<TransformerType>().transformValue(
-            std::declval<folly::Try<InputValueType>>()))::value_type>
+            std::declval<Try<InputValueType>>()))::value_type>
 Receiver<OutputValueType> resumableTransform(
     InitializeArg initializeArg, TransformerType transformer);
-
-/**
- * An OnClosedException passed to a transform callback indicates that the input
- * channel was closed. An OnClosedException can also be thrown by a transform
- * callback, which will close the output channel.
- */
-struct OnClosedException : public std::exception {
-  const char* what() const noexcept override {
-    return "A transform has closed the channel.";
-  }
-};
 
 /**
  * A ReinitializeException thrown by a transform callback indicates that the

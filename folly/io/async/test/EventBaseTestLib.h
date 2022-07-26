@@ -216,9 +216,6 @@ class TestObserver : public folly::ExecutionObserver {
     nestedStart_--;
     numStoppedCalled_++;
   }
-  virtual void runnable(uintptr_t /* id */) noexcept override {
-    // Unused
-  }
 
   int nestedStart_{0};
   int numStartingCalled_{0};
@@ -1487,13 +1484,46 @@ TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitWithin) {
   });
 }
 
-TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
+TYPED_TEST_P(
+    EventBaseTest, RunImmediatelyOrRunInEventBaseThreadAndWaitNotLooping) {
   auto evbPtr = getEventBase<TypeParam>();
   SKIP_IF(!evbPtr) << "Backend not available";
   folly::EventBase& eb = *evbPtr;
   auto mutated = false;
   eb.runImmediatelyOrRunInEventBaseThreadAndWait([&] { mutated = true; });
   EXPECT_TRUE(mutated);
+}
+
+TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadCross) {
+  auto evbPtr = getEventBase<TypeParam>();
+  SKIP_IF(!evbPtr) << "Backend not available";
+  folly::EventBase& eb = *evbPtr;
+  std::thread th(&EventBase::loopForever, &eb);
+  SCOPE_EXIT {
+    eb.terminateLoopSoon();
+    th.join();
+  };
+  // wait for loop to start
+  eb.runInEventBaseThreadAndWait([] {});
+  Baton<> baton1, baton2;
+  EXPECT_FALSE(eb.isInEventBaseThread());
+
+  eb.runImmediatelyOrRunInEventBaseThread([&] {
+    baton1.wait();
+    baton2.post();
+  });
+  EXPECT_FALSE(baton2.ready());
+  baton1.post();
+  EXPECT_TRUE(baton2.try_wait_for(std::chrono::milliseconds(100)));
+}
+
+TYPED_TEST_P(EventBaseTest, RunImmediatelyOrRunInEventBaseThreadNotLooping) {
+  auto evbPtr = getEventBase<TypeParam>();
+  SKIP_IF(!evbPtr) << "Backend not available";
+  folly::EventBase& eb = *evbPtr;
+  Baton<> baton;
+  eb.runImmediatelyOrRunInEventBaseThread([&] { baton.post(); });
+  EXPECT_TRUE(baton.ready());
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -1592,6 +1622,38 @@ TYPED_TEST_P(EventBaseTest, RunInLoopStopLoop) {
   // this a hard API requirement.)
   ASSERT_GE(c1.getCount(), 10);
   ASSERT_LE(c1.getCount(), 11);
+}
+
+// Test loopPool() call sequence
+TYPED_TEST_P(EventBaseTest, RunPoolLoop) {
+  auto evbPtr = getEventBase<TypeParam>();
+  SKIP_IF(!evbPtr) << "Backend not available";
+  folly::EventBase& eventBase = *evbPtr;
+  std::atomic<bool> running = true;
+  int calls = 0;
+
+  CountedLoopCallback c1(&eventBase, 20);
+  CountedLoopCallback c2(
+      &eventBase, 10, [eb = &eventBase, running = &running]() {
+        eb->terminateLoopSoon();
+        running->store(false);
+      });
+
+  eventBase.runInLoop(&c1);
+  eventBase.runInLoop(&c2);
+  ASSERT_EQ(c1.getCount(), 20);
+  ASSERT_EQ(c2.getCount(), 10);
+
+  eventBase.loopPollSetup();
+  while (running.load()) {
+    calls++;
+    eventBase.loopPoll();
+  }
+  eventBase.loopPollCleanup();
+
+  // We expect multiple iterations of the loop to happen, since loopPool has non
+  // blocking semantics, we should call loopPool multiple times
+  ASSERT_GT(calls, 1);
 }
 
 TYPED_TEST_P(EventBaseTest1, pidCheck) {

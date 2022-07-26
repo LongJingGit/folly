@@ -46,6 +46,12 @@ struct hash<folly::fibers::FiberManager::Options> {
 namespace folly {
 namespace fibers {
 
+void FiberManager::defaultExceptionCallback(
+    const std::exception_ptr& eptr, StringPiece context) {
+  LOG(DFATAL) << "Exception thrown in FiberManager with context '" << context
+              << "': " << exceptionStr(eptr);
+}
+
 auto FiberManager::FrozenOptions::create(const Options& options) -> ssize_t {
   return std::hash<Options>()(options);
 }
@@ -79,8 +85,9 @@ const LoopController& FiberManager::loopController() const {
 }
 
 bool FiberManager::hasTasks() const {
-  return fibersActive_ > 0 || !remoteReadyQueue_.empty() ||
-      !remoteTaskQueue_.empty() || remoteCount_ > 0;
+  return fibersActive_.load(std::memory_order_relaxed) > 0 ||
+      !remoteReadyQueue_.empty() || !remoteTaskQueue_.empty() ||
+      remoteCount_ > 0;
 }
 
 bool FiberManager::isRemoteScheduled() const {
@@ -106,8 +113,9 @@ Fiber* FiberManager::getFiber() {
     fibersPoolSize_.store(fibersPoolSize - 1, std::memory_order_relaxed);
   }
   assert(fiber);
-  if (++fibersActive_ > maxFibersActiveLastPeriod_) {
-    maxFibersActiveLastPeriod_ = fibersActive_;
+  auto active = 1 + fibersActive_.fetch_add(1, std::memory_order_relaxed);
+  if (active > maxFibersActiveLastPeriod_) {
+    maxFibersActiveLastPeriod_ = active;
   }
   ++fiberId_;
   bool recordStack = (options_.recordStackEvery != 0) &&
@@ -134,9 +142,6 @@ size_t FiberManager::stackHighWatermark() const {
 }
 
 void FiberManager::remoteReadyInsert(Fiber* fiber) {
-  if (observer_) {
-    observer_->runnable(reinterpret_cast<uintptr_t>(fiber));
-  }
   if (remoteReadyQueue_.insertHead(fiber)) {
     loopController_->scheduleThreadSafe();
   }
@@ -170,7 +175,7 @@ void FiberManager::doFibersPoolResizing() {
     fibersAllocated_.store(fibersAllocated - 1, std::memory_order_relaxed);
   }
 
-  maxFibersActiveLastPeriod_ = fibersActive_;
+  maxFibersActiveLastPeriod_ = fibersActive_.load(std::memory_order_relaxed);
 }
 
 void FiberManager::FibersPoolResizer::run() {

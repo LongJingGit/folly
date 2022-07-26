@@ -17,6 +17,7 @@
 #include <folly/executors/ManualExecutor.h>
 #include <folly/experimental/channels/Channel.h>
 #include <folly/experimental/channels/test/ChannelTestUtil.h>
+#include <folly/experimental/coro/BlockingWait.h>
 #include <folly/portability/GTest.h>
 
 namespace folly {
@@ -40,7 +41,7 @@ class ChannelFixture : public Test,
 
   folly::Executor::KeepAlive<> getExecutor() override { return &executor_; }
 
-  void onNext(folly::Try<int> result) override { onNext_(std::move(result)); }
+  void onNext(Try<int> result) override { onNext_(std::move(result)); }
 
   folly::ManualExecutor executor_;
   StrictMock<MockNextCallback<int>> onNext_;
@@ -217,6 +218,37 @@ TEST_P(ChannelFixture, CancellationRespected) {
   executor_.drain();
 
   EXPECT_TRUE(sender.isReceiverCancelled());
+}
+
+TEST(Channel, CancelNextWithoutClose) {
+  folly::ManualExecutor executor;
+  folly::CancellationSource cancelSource;
+  auto [receiver, sender] = Channel<int>::create();
+
+  sender.write(1);
+  EXPECT_EQ(folly::coro::blockingWait(receiver.next()).value(), 1);
+
+  auto nextTask =
+      folly::coro::co_withCancellation(
+          cancelSource.getToken(),
+          folly::coro::co_invoke(
+              [&receiver =
+                   receiver]() -> folly::coro::Task<std::optional<int>> {
+                co_return co_await receiver.next(false /* closeOnCancel */);
+              }))
+          .scheduleOn(&executor)
+          .start();
+  executor.drain();
+
+  cancelSource.requestCancellation();
+  sender.write(2);
+  executor.drain();
+
+  EXPECT_THROW(
+      folly::coro::blockingWait(std::move(nextTask)),
+      folly::OperationCancelled);
+
+  EXPECT_EQ(folly::coro::blockingWait(receiver.next()).value(), 2);
 }
 
 INSTANTIATE_TEST_SUITE_P(

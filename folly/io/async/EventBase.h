@@ -398,6 +398,41 @@ class EventBase : public TimeoutManager,
   bool loopOnce(int flags = 0);
 
   /**
+   * Poll the EventBase for active events, run them, then return. Unlike
+   * loopOnce, the expectation is that loopPoll will be called multiple times
+   * State is therefore persisted across calls to reflect that there is ongoing
+   * polling. Control will be returned to the calling thread between iterations.
+   * loopPollSetup and loopPollCleanup manage the maintained state across
+   * loopPoll calls.
+   *
+   * This is useful for callers that want to run the loop manually but under the
+   * context that there is continued polling being done by some thread against
+   * the EventBase.
+   *
+   * Returns the same result as loop().
+   *
+   * Must be called within a corresponding pair of loopPollSetup and
+   * loopPollCleanup; may be called many times within the pair.
+   */
+  bool loopPoll();
+
+  /**
+   * Sets up state for active polling to be done against the EventBase. Call
+   * before polling via subsequent loopPoll calls.
+   *
+   * Must be matched with a corresponding call to loopPoolCleanup.
+   */
+  void loopPollSetup();
+
+  /**
+   * Clears state that was setup for active polling against the EventBase. Call
+   * after polling via loopPoolSetup and the subsequent loopPoll calls.
+   *
+   * Must be matched with a corresponding call to loopPoolSetup.
+   */
+  void loopPollCleanup();
+
+  /**
    * Runs the event loop.
    *
    * loopForever() behaves like loop(), except that it keeps running even if
@@ -626,6 +661,19 @@ class EventBase : public TimeoutManager,
    * event base thread, the functor is simply run inline.
    */
   void runImmediatelyOrRunInEventBaseThreadAndWait(Func fn) noexcept;
+
+  /*
+   * Like runInEventBaseThread, but runs function immediately instead of at the
+   * end of the loop when called from the eventbase thread.
+   */
+  template <typename T>
+  void runImmediatelyOrRunInEventBaseThread(void (*fn)(T*), T* arg) noexcept;
+
+  /*
+   * Like runInEventBaseThread, but runs function immediately instead of at the
+   * end of the loop when called from the eventbase thread.
+   */
+  void runImmediatelyOrRunInEventBaseThread(Func fn) noexcept;
 
   /**
    * Set the maximum desired latency in us and provide a callback which will be
@@ -874,6 +922,10 @@ class EventBase : public TimeoutManager,
 
   bool loopBody(int flags = 0, bool ignoreKeepAlive = false);
 
+  void loopMainSetup();
+  bool loopMain(int flags, bool ignoreKeepAlive);
+  void loopMainCleanup();
+
   void runLoopCallbacks(LoopCallbackList& currentCallbacks);
 
   // executes any callbacks queued by runInLoop(); returns false if none found
@@ -991,6 +1043,12 @@ template <typename T>
 void EventBase::runImmediatelyOrRunInEventBaseThreadAndWait(
     void (*fn)(T*), T* arg) noexcept {
   return runImmediatelyOrRunInEventBaseThreadAndWait([=] { fn(arg); });
+}
+
+template <typename T>
+void EventBase::runImmediatelyOrRunInEventBaseThread(
+    void (*fn)(T*), T* arg) noexcept {
+  return runImmediatelyOrRunInEventBaseThread([=] { fn(arg); });
 }
 
 } // namespace folly

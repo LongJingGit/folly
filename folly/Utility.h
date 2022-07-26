@@ -332,6 +332,59 @@ struct identity_fn {
 using Identity = identity_fn;
 FOLLY_INLINE_VARIABLE constexpr identity_fn identity{};
 
+namespace detail {
+
+template <typename T>
+struct inheritable_inherit_ : T {
+  using T::T;
+  template <
+      typename... A,
+      std::enable_if_t<std::is_constructible<T, A...>::value, int> = 0>
+  /* implicit */ FOLLY_ERASE inheritable_inherit_(A&&... a) noexcept(
+      noexcept(T(static_cast<A&&>(a)...)))
+      : T(static_cast<A&&>(a)...) {}
+};
+
+template <typename T>
+struct inheritable_contain_ {
+  T v;
+  template <
+      typename... A,
+      std::enable_if_t<std::is_constructible<T, A...>::value, int> = 0>
+  /* implicit */ FOLLY_ERASE inheritable_contain_(A&&... a) noexcept(
+      noexcept(T(static_cast<A&&>(a)...)))
+      : v(static_cast<A&&>(a)...) {}
+  FOLLY_ERASE operator T&() & noexcept { return v; }
+  FOLLY_ERASE operator T&&() && noexcept { return static_cast<T&&>(v); }
+  FOLLY_ERASE operator T const &() const& noexcept { return v; }
+  FOLLY_ERASE operator T const &&() const&& noexcept {
+    return static_cast<T const&&>(v);
+  }
+};
+
+template <bool>
+struct inheritable_;
+template <>
+struct inheritable_<false> {
+  template <typename T>
+  using apply = inheritable_inherit_<T>;
+};
+template <>
+struct inheritable_<true> {
+  template <typename T>
+  using apply = inheritable_contain_<T>;
+};
+
+//  inheritable
+//
+//  A class wrapping an arbitrary type T which is always inheritable, and which
+//  enables empty-base-optimization when possible.
+template <typename T>
+using inheritable =
+    typename inheritable_<std::is_final<T>::value>::template apply<T>;
+
+} // namespace detail
+
 namespace moveonly_ { // Protection from unintended ADL.
 
 template <bool Copy, bool Move>
@@ -377,6 +430,60 @@ class EnableCopyMove<false, false> {
 } // namespace moveonly_
 
 using MoveOnly = moveonly_::EnableCopyMove<false, true>;
+
+//  unsafe_default_uninitialized
+//  unsafe_default_uninitialized_cv
+//
+//  An object which is explicitly convertible to any default-constructible type
+//  and which, upon conversion, yields a default-initialized value of that type.
+//
+//  https://en.cppreference.com/w/cpp/language/default_initialization
+//
+//  For fundamental types, a default-initalized instance may have indeterminate
+//  value. Reading an indeterminate value is undefined behavior but may offer a
+//  performance optimization. When using an indeterminate value as a performance
+//  optimization, it is best to be explicit.
+//
+//  Useful as an escape hatch when enabling warnings or errors:
+//  * gcc:
+//    * uninitialized
+//    * maybe-uninitialized
+//  * clang:
+//    * uninitialized
+//    * conditional-uninitialized
+//    * sometimes-uninitialized
+//    * uninitialized-const-reference
+//  * msvc:
+//    * C4701: potentially uninitialized local variable used
+//    * C4703: potentially uninitialized local pointer variable used
+//
+//  Example:
+//
+//      int local = folly::unsafe_default_initialized;
+//      store_value_into_int_ptr(&value); // suppresses possible warning
+//      use_value(value); // suppresses possible warning
+struct unsafe_default_initialized_cv {
+  template <typename T>
+  FOLLY_ERASE constexpr /* implicit */ operator T() const noexcept {
+#if defined(__cpp_lib_is_constant_evaluated)
+#if __cpp_lib_is_constant_evaluated >= 201811L
+    if (!std::is_constant_evaluated()) {
+      T uninit;
+      FOLLY_PUSH_WARNING
+      FOLLY_MSVC_DISABLE_WARNING(4701)
+      FOLLY_MSVC_DISABLE_WARNING(4703)
+      FOLLY_GNU_DISABLE_WARNING("-Wuninitialized")
+      FOLLY_GNU_DISABLE_WARNING("-Wmaybe-uninitialized")
+      return uninit;
+      FOLLY_POP_WARNING
+    }
+#endif
+#endif
+    return T();
+  }
+};
+FOLLY_INLINE_VARIABLE constexpr unsafe_default_initialized_cv
+    unsafe_default_initialized{};
 
 struct to_signed_fn {
   template <typename..., typename T>
@@ -519,6 +626,63 @@ struct to_integral_fn {
   }
 };
 FOLLY_INLINE_VARIABLE constexpr to_integral_fn to_integral{};
+
+template <typename Src>
+class to_floating_point_convertible {
+  static_assert(std::is_integral<Src>::value, "not a floating-point");
+
+  template <typename Dst>
+  static constexpr bool to_ = std::is_floating_point<Dst>::value;
+
+ public:
+  explicit constexpr to_floating_point_convertible(Src const& value) noexcept
+      : value_(value) {}
+
+#if __cplusplus >= 201703L
+  explicit to_floating_point_convertible(to_floating_point_convertible const&) =
+      default;
+  explicit to_floating_point_convertible(to_floating_point_convertible&&) =
+      default;
+#else
+  to_floating_point_convertible(to_floating_point_convertible const&) = default;
+  to_floating_point_convertible(to_floating_point_convertible&&) = default;
+#endif
+  to_floating_point_convertible& operator=(
+      to_floating_point_convertible const&) = default;
+  to_floating_point_convertible& operator=(to_floating_point_convertible&&) =
+      default;
+
+  template <typename Dst, std::enable_if_t<to_<Dst>, int> = 0>
+  /* implicit */ constexpr operator Dst() const noexcept {
+    FOLLY_PUSH_WARNING
+    FOLLY_GNU_DISABLE_WARNING("-Wconversion")
+    return value_;
+    FOLLY_POP_WARNING
+  }
+
+ private:
+  Src value_;
+};
+
+//  to_floating_point
+//
+//  A utility for performing explicit integral-to-floating-point conversion
+//  without specifying the destination type. Sometimes preferable to
+//  static_cast<Dst>(src) to document the intended semantics of the cast.
+//
+//  Models explicit conversion with an elided destination type. Sits in between
+//  a stricter explicit conversion with a named destination type and a more
+//  lenient implicit conversion. Implemented with implicit conversion in order
+//  to take advantage of the undefined-behavior sanitizer's inspection of all
+//  implicit conversions.
+struct to_floating_point_fn {
+  template <typename..., typename Src>
+  constexpr auto operator()(Src const& src) const noexcept
+      -> to_floating_point_convertible<Src> {
+    return to_floating_point_convertible<Src>{src};
+  }
+};
+FOLLY_INLINE_VARIABLE constexpr to_floating_point_fn to_floating_point{};
 
 struct to_underlying_fn {
   template <typename..., class E>

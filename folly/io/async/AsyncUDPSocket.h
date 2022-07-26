@@ -236,8 +236,12 @@ class AsyncUDPSocket : public EventHandler {
    * Set extra control messages to send
    */
   virtual void setCmsgs(const SocketOptionMap& cmsgs);
+  virtual void setNontrivialCmsgs(
+      const SocketNontrivialOptionMap& nontrivialCmsgs);
 
   virtual void appendCmsgs(const SocketOptionMap& cmsgs);
+  virtual void appendNontrivialCmsgs(
+      const SocketNontrivialOptionMap& nontrivialCmsgs);
 
   /**
    * Send the data in buffer to destination. Returns the return code from
@@ -342,6 +346,11 @@ class AsyncUDPSocket : public EventHandler {
    * exist yet.
    */
   virtual void setFreeBind(bool freeBind) { freeBind_ = freeBind; }
+
+  /**
+   * Set IP_TRANSPARENT to allow enables transparent proxying on the socket
+   */
+  virtual void setTransparent(bool transparent) { transparent_ = transparent; }
 
   /**
    * Set reuse port mode to call bind() on the same address multiple times
@@ -562,6 +571,7 @@ class AsyncUDPSocket : public EventHandler {
   bool reuseAddr_{false};
   bool reusePort_{false};
   bool freeBind_{false};
+  bool transparent_{false};
   int rcvBuf_{0};
   int sndBuf_{0};
   int busyPollUs_{0};
@@ -604,6 +614,8 @@ class AsyncUDPSocket : public EventHandler {
   IOBufFreeFunc ioBufFreeFunc_;
 
   SocketOptionMap cmsgs_;
+
+  SocketNontrivialOptionMap nontrivialCmsgs_;
 
   netops::DispatcherContainer netops_;
 };

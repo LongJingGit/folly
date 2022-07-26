@@ -244,7 +244,7 @@ class alignas(64) BucketTable {
   // Slightly higher than 1.0, in case hashing to shards isn't
   // perfectly balanced, reserve(size) will still work without
   // rehashing.
-  static constexpr float kDefaultLoadFactor = 1.05;
+  static constexpr float kDefaultLoadFactor = 1.05f;
   typedef std::pair<const KeyType, ValueType> value_type;
 
   using Node =
@@ -266,7 +266,8 @@ class alignas(64) BucketTable {
          (folly::popcount(max_size_ - 1) + ShardBits <= 32)));
     auto buckets = Buckets::create(initial_buckets, cohort);
     buckets_.store(buckets, std::memory_order_release);
-    load_factor_nodes_ = to_integral(initial_buckets * load_factor_);
+    load_factor_nodes_ =
+        to_integral(static_cast<float>(initial_buckets) * load_factor_);
     bucket_count_.store(initial_buckets, std::memory_order_relaxed);
   }
 
@@ -332,7 +333,8 @@ class alignas(64) BucketTable {
     auto buckets = buckets_.load(std::memory_order_relaxed);
     DCHECK(buckets); // Use-after-destruction by user.
     auto newbuckets = Buckets::create(bucket_count, cohort);
-    load_factor_nodes_ = to_integral(bucket_count * load_factor_);
+    load_factor_nodes_ =
+        to_integral(static_cast<float>(bucket_count) * load_factor_);
     for (size_t i = 0; i < oldcount; i++) {
       auto bucket = &buckets->buckets_[i]();
       auto node = bucket->load(std::memory_order_relaxed);
@@ -347,7 +349,6 @@ class alignas(64) BucketTable {
       // assuming all the nodes hash to the same bucket.
       auto lastrun = node;
       auto lastidx = idx;
-      auto count = 0;
       auto last = node->next_.load(std::memory_order_relaxed);
       for (; last != nullptr;
            last = last->next_.load(std::memory_order_relaxed)) {
@@ -355,9 +356,7 @@ class alignas(64) BucketTable {
         if (k != lastidx) {
           lastidx = k;
           lastrun = last;
-          count = 0;
         }
-        count++;
       }
       // Set longest last run in new bucket, incrementing the refcount.
       lastrun->acquire_link(); // defined in hazptr_obj_base_linked
@@ -1795,10 +1794,9 @@ class alignas(64) ConcurrentHashMapSegment {
     }
     return res;
   }
-
-  template <typename Key, typename Value>
-  bool assign_if_equal(
-      Iterator& it, Key&& k, const ValueType& expected, Value&& desired) {
+  template <typename Key, typename Value, typename Predicate>
+  bool assign_if(
+      Iterator& it, Key&& k, Value&& desired, Predicate&& predicate) {
     auto node = (Node*)Allocator().allocate(sizeof(Node));
     new (node)
         Node(cohort_, std::forward<Key>(k), std::forward<Value>(desired));
@@ -1806,13 +1804,23 @@ class alignas(64) ConcurrentHashMapSegment {
         it,
         node->getItem().first,
         InsertType::MATCH,
-        [&expected](const ValueType& v) { return v == expected; },
+        std::forward<Predicate>(predicate),
         node);
     if (!res) {
       node->~Node();
       Allocator().deallocate((uint8_t*)node, sizeof(Node));
     }
     return res;
+  }
+
+  template <typename Key, typename Value>
+  bool assign_if_equal(
+      Iterator& it, Key&& k, const ValueType& expected, Value&& desired) {
+    return assign_if(
+        it,
+        std::forward<Key>(k),
+        std::forward<Value>(desired),
+        [&expected](const ValueType& v) { return v == expected; });
   }
 
   template <typename MatchFunc, typename K, typename... Args>

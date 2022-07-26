@@ -20,7 +20,7 @@
 
 #include <folly/executors/GlobalThreadPoolList.h>
 #include <folly/portability/PThread.h>
-#include <folly/synchronization/AsymmetricMemoryBarrier.h>
+#include <folly/synchronization/AsymmetricThreadFence.h>
 #include <folly/tracing/StaticTracepoint.h>
 
 namespace folly {
@@ -55,8 +55,8 @@ ThreadPoolExecutor::ThreadPoolExecutor(
     : threadFactory_(std::move(threadFactory)),
       taskStatsCallbacks_(std::make_shared<TaskStatsCallbackRegistry>()),
       threadPoolHook_("folly::ThreadPoolExecutor"),
-      minThreads_(minThreads),
-      threadTimeout_(FLAGS_threadtimeout_ms) {
+      minThreads_(minThreads) {
+  threadTimeout_ = std::chrono::milliseconds(FLAGS_threadtimeout_ms);
   namePrefix_ = getNameHelper();
 }
 
@@ -74,23 +74,6 @@ ThreadPoolExecutor::Task::Task(
   // Assume that the task in enqueued on creation
   enqueueTime_ = std::chrono::steady_clock::now();
 }
-
-namespace {
-
-template <class F>
-void nothrow(const char* name, F&& f) {
-  try {
-    f();
-  } catch (const std::exception& e) {
-    LOG(ERROR) << "ThreadPoolExecutor: " << name << " threw unhandled "
-               << typeid(e).name() << " exception: " << e.what();
-  } catch (...) {
-    LOG(ERROR) << "ThreadPoolExecutor: " << name
-               << " threw unhandled non-exception object";
-  }
-}
-
-} // namespace
 
 void ThreadPoolExecutor::runTask(const ThreadPtr& thread, Task&& task) {
   thread->idle.store(false, std::memory_order_relaxed);
@@ -470,7 +453,7 @@ bool ThreadPoolExecutor::tryTimeoutThread() {
   // queues have seq_cst ordering, some do not, so add an explicit
   // barrier.  tryTimeoutThread is the slow path and only happens once
   // every thread timeout; use asymmetric barrier to keep add() fast.
-  asymmetricHeavyBarrier();
+  asymmetric_thread_fence_heavy(std::memory_order_seq_cst);
 
   // If this is based on idle thread timeout, then
   // adjust vars appropriately (otherwise stop() or join()
@@ -499,7 +482,7 @@ void ThreadPoolExecutor::ensureActiveThreads() {
 
   // Matches barrier in tryTimeoutThread().  Ensure task added
   // is seen before loading activeThreads_ below.
-  asymmetricLightBarrier();
+  asymmetric_thread_fence_light(std::memory_order_seq_cst);
 
   // Fast path assuming we are already at max threads.
   auto active = activeThreads_.load(std::memory_order_relaxed);

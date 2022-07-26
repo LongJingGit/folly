@@ -388,6 +388,29 @@ class ConcurrentHashMap {
     return std::move(res);
   }
 
+  // Assign to desired if and only if the predicate returns true
+  // for the current value.
+  template <typename Key, typename Value, typename Predicate>
+  folly::Optional<ConstIterator> assign_if(
+      Key&& k, Value&& desired, Predicate&& predicate) {
+    auto segment = pickSegment(k);
+    ConstIterator res(this, segment);
+    auto seg = segments_[segment].load(std::memory_order_acquire);
+    if (!seg) {
+      return none;
+    } else {
+      auto r = seg->assign_if(
+          res.it_,
+          std::forward<Key>(k),
+          std::forward<Value>(desired),
+          std::forward<Predicate>(predicate));
+      if (!r) {
+        return none;
+      }
+    }
+    return std::move(res);
+  }
+
   // Assign to desired if and only if key k is equal to expected
   template <typename Key, typename Value>
   folly::Optional<ConstIterator> assign_if_equal(
@@ -751,7 +774,6 @@ class ConcurrentHashMap {
   mutable Atom<uint64_t> endSeg_{0};
 };
 
-#if FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE
 template <
     typename KeyType,
     typename ValueType,
@@ -770,7 +792,12 @@ using ConcurrentHashMapSIMD = ConcurrentHashMap<
     ShardBits,
     Atom,
     Mutex,
-    detail::concurrenthashmap::simd::SIMDTable>;
+#if FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE
+    detail::concurrenthashmap::simd::SIMDTable
+#else
+    // fallback to regular impl
+    detail::concurrenthashmap::bucket::BucketTable
 #endif
+    >;
 
 } // namespace folly

@@ -22,7 +22,7 @@
 #include <map>
 #include <memory>
 
-#include <folly/ConstructorCallback.h>
+#include <folly/ConstructorCallbackList.h>
 #include <folly/Optional.h>
 #include <folly/SocketAddress.h>
 #include <folly/detail/SocketFastOpen.h>
@@ -1336,6 +1336,8 @@ class AsyncSocket : public AsyncTransport {
     }
   }
 
+  void drainErrorQueue() noexcept;
+
   // event notification methods
   void ioReady(uint16_t events) noexcept;
   virtual void checkForImmediateRead() noexcept;
@@ -1665,6 +1667,7 @@ class AsyncSocket : public AsyncTransport {
 
   // zerocopy read
   bool zerocopyReadDisabled_{false};
+  int zerocopyReadErr_{0};
 
   // subclasses may cache these on first call to get
   mutable std::unique_ptr<const AsyncTransportCertificate> peerCertData_{
@@ -1679,8 +1682,8 @@ class AsyncSocket : public AsyncTransport {
   // allow other functions to register for callbacks when
   // new AsyncSocket()'s are created
   // must be LAST member defined to ensure other members are initialized
-  // before access; see ConstructorCallback.h for details
-  ConstructorCallback<AsyncSocket> constructorCallback_{this};
+  // before access; see ConstructorCallbackList.h for details
+  ConstructorCallbackList<AsyncSocket> constructorCallbackList_{this};
 };
 
 } // namespace folly

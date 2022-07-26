@@ -22,11 +22,16 @@
 #include <tuple>
 #include <type_traits>
 
+#include <folly/ConstexprMath.h>
+
 #ifdef _WIN32
 #include <intrin.h>
 #endif
 
 namespace folly {
+
+template <typename T>
+class atomic_ref;
 
 namespace detail {
 
@@ -217,8 +222,6 @@ inline bool atomic_fetch_reset_native(
 template <typename Atomic>
 inline bool atomic_fetch_flip_native(
     Atomic& atomic, std::size_t bit, std::memory_order mo) {
-  static_assert(!std::is_same<Atomic, std::atomic<std::uint32_t>>{}, "");
-  static_assert(!std::is_same<Atomic, std::atomic<std::uint64_t>>{}, "");
   return atomic_fetch_flip_fallback(atomic, bit, mo);
 }
 
@@ -227,25 +230,44 @@ inline bool atomic_fetch_flip_native(
 #define FOLLY_DETAIL_ATOMIC_BIT_OP_DEFINE(instr)                          \
   struct atomic_fetch_bit_op_native_##instr##_fn {                        \
     template <typename Int>                                               \
-    FOLLY_ERASE bool operator()(Int* ptr, Int bit) const {                \
+    FOLLY_ERASE bool operator()(                                          \
+        Int* ptr, Int bit, std::memory_order order) const {               \
       bool out = false;                                                   \
-      if (sizeof(Int) == 2) {                                             \
-        asm volatile("lock " #instr "w %1, (%2); setc %0"                 \
-                     : "=r"(out)                                          \
-                     : "ri"(bit), "r"(ptr)                                \
-                     : "memory", "flags");                                \
-      }                                                                   \
-      if (sizeof(Int) == 4) {                                             \
-        asm volatile("lock " #instr "l %1, (%2); setc %0"                 \
-                     : "=r"(out)                                          \
-                     : "ri"(bit), "r"(ptr)                                \
-                     : "memory", "flags");                                \
-      }                                                                   \
-      if (sizeof(Int) == 8) {                                             \
-        asm volatile("lock " #instr "q %1, (%2); setc %0"                 \
-                     : "=r"(out)                                          \
-                     : "ri"(bit), "r"(ptr)                                \
-                     : "memory", "flags");                                \
+      if (order == std::memory_order_relaxed) {                           \
+        if (sizeof(Int) == 2) {                                           \
+          asm("lock " #instr "w %2, %1"                                   \
+              : "=@ccc"(out), "+m"(*ptr)                                  \
+              : "ri"(bit));                                               \
+        }                                                                 \
+        if (sizeof(Int) == 4) {                                           \
+          asm("lock " #instr "l %2, %1"                                   \
+              : "=@ccc"(out), "+m"(*ptr)                                  \
+              : "ri"(bit));                                               \
+        }                                                                 \
+        if (sizeof(Int) == 8) {                                           \
+          asm("lock " #instr "q %2, %1"                                   \
+              : "=@ccc"(out), "+m"(*ptr)                                  \
+              : "ri"(bit));                                               \
+        }                                                                 \
+      } else {                                                            \
+        if (sizeof(Int) == 2) {                                           \
+          asm volatile("lock " #instr "w %1, (%2)"                        \
+                       : "=@ccc"(out)                                     \
+                       : "ri"(bit), "r"(ptr)                              \
+                       : "memory");                                       \
+        }                                                                 \
+        if (sizeof(Int) == 4) {                                           \
+          asm volatile("lock " #instr "l %1, (%2)"                        \
+                       : "=@ccc"(out)                                     \
+                       : "ri"(bit), "r"(ptr)                              \
+                       : "memory");                                       \
+        }                                                                 \
+        if (sizeof(Int) == 8) {                                           \
+          asm volatile("lock " #instr "q %1, (%2)"                        \
+                       : "=@ccc"(out)                                     \
+                       : "ri"(bit), "r"(ptr)                              \
+                       : "memory");                                       \
+        }                                                                 \
       }                                                                   \
       return out;                                                         \
     }                                                                     \
@@ -270,11 +292,34 @@ FOLLY_ERASE bool atomic_fetch_bit_op_native_(
   constexpr auto lo_size = std::size_t(2);
   constexpr auto hi_size = std::size_t(8);
   // some versions of TSAN do not properly instrument the inline assembly
-  if (atomic_size < lo_size || atomic_size > hi_size || folly::kIsSanitize) {
+  if (atomic_size > hi_size || folly::kIsSanitize) {
     return fb(atomic, bit, order);
   }
-  return op(reinterpret_cast<Integer*>(&atomic), Integer(bit));
+  auto address = reinterpret_cast<std::uintptr_t>(&atomic);
+  // there is a minimum word size - if too small, enlarge
+  constexpr auto word_size = constexpr_clamp(atomic_size, lo_size, hi_size);
+  using word_type = uint_bits_t<word_size * 8>;
+  auto adjust = std::size_t(address % lo_size);
+  address -= adjust;
+  bit += 8 * adjust;
+  return op(reinterpret_cast<word_type*>(address), word_type(bit), order);
 }
+
+#if __cpp_lib_atomic_ref >= 201806L
+template <typename Integer, typename Op, typename Fb>
+FOLLY_ERASE bool atomic_fetch_bit_op_native_(
+    std::atomic_ref<Integer>& atomic,
+    std::size_t bit,
+    std::memory_order order,
+    Op op,
+    Fb fb) {
+  if constexpr (!std::atomic_ref<Integer>::is_always_lock_free) {
+    return fb(atomic, bit, order);
+  }
+  auto& ref = **reinterpret_cast<std::atomic<Integer>**>(&atomic);
+  return atomic_fetch_bit_op_native_(ref, bit, order, op, fb);
+}
+#endif
 
 template <typename Integer>
 inline bool atomic_fetch_set_native(
@@ -283,6 +328,24 @@ inline bool atomic_fetch_set_native(
   auto fb = atomic_fetch_set_fallback;
   return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
 }
+
+template <typename Integer>
+inline bool atomic_fetch_set_native(
+    atomic_ref<Integer>& atomic, std::size_t bit, std::memory_order order) {
+  return atomic_fetch_set_native(atomic.atomic(), bit, order);
+}
+
+#if __cpp_lib_atomic_ref >= 201806L
+template <typename Integer>
+inline bool atomic_fetch_set_native(
+    std::atomic_ref<Integer>& atomic,
+    std::size_t bit,
+    std::memory_order order) {
+  auto op = atomic_fetch_bit_op_native_bts;
+  auto fb = atomic_fetch_set_fallback;
+  return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
+}
+#endif
 
 template <typename Atomic>
 inline bool atomic_fetch_set_native(
@@ -299,6 +362,24 @@ inline bool atomic_fetch_reset_native(
   return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
 }
 
+template <typename Integer>
+inline bool atomic_fetch_reset_native(
+    atomic_ref<Integer>& atomic, std::size_t bit, std::memory_order order) {
+  return atomic_fetch_reset_native(atomic.atomic(), bit, order);
+}
+
+#if __cpp_lib_atomic_ref >= 201806L
+template <typename Integer>
+inline bool atomic_fetch_reset_native(
+    std::atomic_ref<Integer>& atomic,
+    std::size_t bit,
+    std::memory_order order) {
+  auto op = atomic_fetch_bit_op_native_btr;
+  auto fb = atomic_fetch_reset_fallback;
+  return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
+}
+#endif
+
 template <typename Atomic>
 bool atomic_fetch_reset_native(
     Atomic& atomic, std::size_t bit, std::memory_order order) {
@@ -313,6 +394,24 @@ inline bool atomic_fetch_flip_native(
   auto fb = atomic_fetch_flip_fallback;
   return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
 }
+
+template <typename Integer>
+inline bool atomic_fetch_flip_native(
+    atomic_ref<Integer>& atomic, std::size_t bit, std::memory_order order) {
+  return atomic_fetch_flip_native(atomic.atomic(), bit, order);
+}
+
+#if __cpp_lib_atomic_ref >= 201806L
+template <typename Integer>
+inline bool atomic_fetch_flip_native(
+    std::atomic_ref<Integer>& atomic,
+    std::size_t bit,
+    std::memory_order order) {
+  auto op = atomic_fetch_bit_op_native_btc;
+  auto fb = atomic_fetch_flip_fallback;
+  return atomic_fetch_bit_op_native_(atomic, bit, order, op, fb);
+}
+#endif
 
 template <typename Atomic>
 bool atomic_fetch_flip_native(

@@ -111,7 +111,7 @@ inline Ret exception_wrapper::noop_(Args...) {
 
 inline std::type_info const* exception_wrapper::uninit_type_(
     exception_wrapper const*) {
-  return &typeid(void);
+  return nullptr;
 }
 
 template <class Ex, typename... As>
@@ -434,12 +434,8 @@ inline std::exception_ptr exception_wrapper::to_exception_ptr() const noexcept {
   return vptr_->get_exception_ptr_(this).eptr_.ptr_;
 }
 
-inline std::type_info const& exception_wrapper::none() noexcept {
-  return typeid(void);
-}
-
-inline std::type_info const& exception_wrapper::type() const noexcept {
-  return *vptr_->type_(this);
+inline std::type_info const* exception_wrapper::type() const noexcept {
+  return vptr_->type_(this);
 }
 
 inline folly::fbstring exception_wrapper::what() const {
@@ -450,8 +446,8 @@ inline folly::fbstring exception_wrapper::what() const {
 }
 
 inline folly::fbstring exception_wrapper::class_name() const {
-  auto& ti = type();
-  return ti == none() ? "" : folly::demangle(ti);
+  auto const* const ti = type();
+  return !*this ? "" : !ti ? "<unknown>" : folly::demangle(*ti);
 }
 
 template <class Ex>
@@ -491,7 +487,7 @@ inline bool exception_wrapper::with_exception_(This& this_, Fn fn_) {
   using from_ex = with_exception_from_ex_;
   using from = conditional_t<std::is_void<Ex>::value, from_fn, from_ex>;
   using type = typename from::template apply<Ex, Fn>;
-  return with_exception_(this_, fn_, tag<type>);
+  return with_exception_(this_, std::move(fn_), tag<type>);
 }
 
 template <class This, class... CatchFns>

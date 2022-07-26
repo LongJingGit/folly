@@ -128,7 +128,7 @@ BufferedRandomDevice::BufferedRandomDevice(size_t bufferSize)
       buffer_(new unsigned char[bufferSize]),
       ptr_(buffer_.get() + bufferSize) { // refill on first use
   FOLLY_MAYBE_UNUSED static auto const init = [] {
-    detail::AtFork::registerHandler(
+    AtFork::registerHandler(
         nullptr,
         /*prepare*/ []() { return true; },
         /*parent*/ []() {},
@@ -176,7 +176,7 @@ void Random::secureRandom(void* data, size_t size) {
 
 ThreadLocalPRNG::result_type ThreadLocalPRNG::operator()() {
   struct Wrapper {
-    Random::DefaultGenerator object{Random::create()};
+    Generator object{Random::create()};
   };
   using Single = SingletonThreadLocal<Wrapper, RandomTag>;
   return Single::get().object();

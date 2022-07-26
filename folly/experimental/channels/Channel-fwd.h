@@ -38,7 +38,10 @@ bool receiverWait(
     Receiver<TValue>& receiver, detail::IChannelCallback* receiverCallback);
 
 template <typename TValue>
-std::optional<folly::Try<TValue>> receiverGetValue(Receiver<TValue>& receiver);
+detail::IChannelCallback* cancelReceiverWait(Receiver<TValue>& receiver);
+
+template <typename TValue>
+std::optional<Try<TValue>> receiverGetValue(Receiver<TValue>& receiver);
 
 template <typename TValue>
 std::pair<detail::ChannelBridgePtr<TValue>, detail::ReceiverQueue<TValue>>

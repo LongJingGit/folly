@@ -227,6 +227,13 @@
 #define CO_ASSERT_GT(val1, val2) \
   CO_ASSERT_PRED_FORMAT2(::testing::internal::CmpHelperGT, val1, val2)
 
+#define CO_ASSERT_THROW(statement, expected_exception) \
+  GTEST_TEST_THROW_(statement, expected_exception, CO_GTEST_FATAL_FAILURE_)
+#define CO_ASSERT_NO_THROW(statement) \
+  GTEST_TEST_NO_THROW_(statement, CO_GTEST_FATAL_FAILURE_)
+#define CO_ASSERT_ANY_THROW(statement) \
+  GTEST_TEST_ANY_THROW_(statement, CO_GTEST_FATAL_FAILURE_)
+
 /**
  * coroutine version of FAIL() which is defined as GTEST_FAIL()
  * GTEST_FATAL_FAILURE_("Failed")
