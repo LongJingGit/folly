@@ -212,19 +212,19 @@ class RingBufferSlot {
   template <typename V>
   void write(const uint32_t turn, const V& value) noexcept {
     Atom<uint32_t> cutoff(0);
-    sequencer_.waitForTurn(turn * 2, cutoff, false);
+    sequencer_.waitForTurn(turn * 2, cutoff, false);    // 可以开始写 (turn * 2) << 6 == 0/128/256
 
     // Change to an odd-numbered turn to indicate write in process
-    sequencer_.completeTurn(turn * 2);
+    sequencer_.completeTurn(turn * 2);    // 开始写 (turn * 2) << 6 == 64/192/320
 
     storage_.store(value);
-    sequencer_.completeTurn(turn * 2 + 1);
+    sequencer_.completeTurn(turn * 2 + 1);    // 写结束 (turn * 2) << 6 == 128/256/384
     // At (turn + 1) * 2
   }
 
   template <typename V>
   bool waitAndTryRead(V& dest, uint32_t turn) noexcept {
-    uint32_t desired_turn = (turn + 1) * 2;
+    uint32_t desired_turn = (turn + 1) * 2;   // 可以读 ((turn + 1) * 2) << 6 == 128/256/384
     Atom<uint32_t> cutoff(0);
     if (sequencer_.tryWaitForTurn(desired_turn, cutoff, false) !=
         TurnSequencer<Atom>::TryWaitResult::SUCCESS) {
@@ -233,19 +233,19 @@ class RingBufferSlot {
     storage_.load(dest);
 
     // if it's still the same turn, we read the value successfully
-    return sequencer_.isTurn(desired_turn);
+    return sequencer_.isTurn(desired_turn);   // 读成功(读失败的情况: A线程在读 slot[0] 的时候, B 线程修改了 slot[0])
   }
 
   template <typename V>
   bool tryRead(V& dest, uint32_t turn) const noexcept {
     // The write that started at turn 0 ended at turn 2
-    if (!sequencer_.isTurn((turn + 1) * 2)) {
+    if (!sequencer_.isTurn((turn + 1) * 2)) {   // 判断是否可以读 ((turn + 1) * 2) << 6 == 128/256/384
       return false;
     }
     storage_.load(dest);
 
     // if it's still the same turn, we read the value successfully
-    return sequencer_.isTurn((turn + 1) * 2);
+    return sequencer_.isTurn((turn + 1) * 2);   // 读成功
   }
 
  private:
